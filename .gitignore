@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# Visual Studio stuff
+*.user
+Debug
+Release
+.vs
