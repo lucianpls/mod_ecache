@@ -198,11 +198,12 @@ static int handler(request_rec *r) {
     REQ_ERR_IF(tile.x >= level.w || tile.y >= level.h);
 
     // Bundle row and column, good to level 23
+    apr_uint32_t blev = static_cast<apr_uint32_t>(tile.l);
     apr_uint32_t bcol = static_cast<apr_uint32_t>((tile.x / BSZ) * BSZ);
     apr_uint32_t brow = static_cast<apr_uint32_t>((tile.y / BSZ) * BSZ);
 
     const char *bundlename = apr_psprintf(pool, 
-        "%s/L%02d/R%04xC%04x.bundle", cfg->source, tile.l, brow, bcol);
+        "%s/L%02d/R%04xC%04x.bundle", cfg->source, blev, brow, bcol);
 
     range_t tinfo;
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
