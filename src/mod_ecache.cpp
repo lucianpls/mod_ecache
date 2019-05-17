@@ -11,6 +11,7 @@
 #include <ahtse.h>
 #include <receive_context.h>
 #include <http_log.h>
+#include <http_request.h>
 
 using namespace std;
 
@@ -38,7 +39,7 @@ struct ecache_conf {
 static void *create_dir_config(apr_pool_t *p, char *dummy) {
     auto *c = reinterpret_cast<ecache_conf *>(
         apr_pcalloc(p, sizeof(ecache_conf)));
-    c->retries = 5;
+    c->retries = 4;
     return c;
 }
 
@@ -71,7 +72,7 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
         c->source[strlen(c->source) - 1] = 0;
 
     line = apr_table_get(kvp, "RetryCount");
-    c->retries = 1 + (line ? atoi(line) : 0);
+    c->retries = 1 + (line ? atoi(line) : c->retries);
     if ((c->retries < 1) || (c->retries > 100))
         return "Invalid RetryCount value, expected 0 to 99";
 
@@ -96,7 +97,67 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
 
 static int file_pread(request_rec *r, storage_manager &mgr,
     apr_off_t offset, const char *name, const char *token = "BUNDLE")
-{  // Only local file for now
+{
+    auto  cfg = get_conf<ecache_conf>(r, &ecache_module);
+    bool redirect = (strlen(name) > 3 && name[0] == ':' && name[1] == '/');
+    if (redirect) {
+        // Remote
+        name = name + 2;
+        ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
+        if (!receive_filter) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                "Can't find receive filter, did you load mod_receive?");
+            return 0;
+        }
+
+        // buffer for the image
+        receive_ctx rctx;
+        rctx.buffer = mgr.buffer;
+        rctx.maxsize = mgr.size;
+        rctx.size = 0;
+
+        char *range = apr_psprintf(r->pool,
+            "bytes=%" APR_UINT64_T_FMT "-%" APR_UINT64_T_FMT,
+            offset, offset + mgr.size);
+
+        // S3 may return less than requested, so we retry the request a couple of times
+        int tries = cfg->retries;
+        bool failed = false;
+        apr_time_t now = apr_time_now();
+        do {
+            request_rec *sr = ap_sub_req_lookup_uri(name, r, r->output_filters);
+            apr_table_setn(sr->headers_in, "Range", range);
+            ap_filter_t *rf = ap_add_output_filter_handle(receive_filter, &rctx,
+                sr, sr->connection);
+            int status = ap_run_sub_req(sr);
+            ap_remove_output_filter(rf);
+            ap_destroy_sub_req(sr);
+
+            if (status != APR_SUCCESS)
+                failed = true;
+            else {
+                switch (sr->status) {
+                case HTTP_PARTIAL_CONTENT: 
+                    if (0 == tries--) {
+                        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                            "Can't fetch data from %s, took %" APR_TIME_T_FMT "us",
+                            name, apr_time_now() - now);
+                        failed = true;
+                    }
+                case HTTP_OK:
+                    break;
+                default: // Any other return code is unrecoverable
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                        "Can't fetch data from %s, remote returned %d",
+                            name, sr->status);
+                    failed = true;
+                }
+            }
+        } while (!failed && rctx.size != mgr.size);
+
+        return failed ? 0 : rctx.size;
+    } // Redirect read
+
     apr_file_t *pfh;
 
     if (APR_SUCCESS != 
@@ -147,8 +208,9 @@ static int handler(request_rec *r) {
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
 
     storage_manager sm(&tinfo.offset, sizeof(tinfo.offset));
-    if (sizeof(tinfo.offset) != file_pread(r, sm, tinfo.offset, bundlename)) {
-        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, "File access error in %s", bundlename);
+    if (sizeof(tinfo.offset) != file_pread(r, sm, idx_offset, bundlename)) {
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
+            "File access error in %s", bundlename);
         return sendEmptyTile(r, raster.missing);
     }
 
@@ -159,10 +221,8 @@ static int handler(request_rec *r) {
     if (tinfo.size < 4)
         return sendEmptyTile(r, raster.missing);
 
-    if (MAX_TILE_SIZE < tinfo.size) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Tile too large from %s", r->uri);
-        return HTTP_INTERNAL_SERVER_ERROR;
-    }
+    SERR_IF(MAX_TILE_SIZE < tinfo.size,  
+        apr_psprintf(pool, "Tile too large from %s", r->uri));
 
     // TODO: Check ETAG
     char ETag[16];
