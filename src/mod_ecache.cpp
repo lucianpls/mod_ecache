@@ -58,8 +58,6 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
     err_message = configRaster(cmd->pool, kvp, c->raster);
     if (err_message)
         return err_message;
-    if (c->raster.skip)
-        return "SkippedLevels not supported";
     if (c->raster.size.z != 1)
         return "Extra dimension not supported";
 
@@ -193,6 +191,7 @@ static int handler(request_rec *r) {
     if (tile.l < 0)
         return sendEmptyTile(r, raster.missing);
 
+    tile.l += raster.skip;
     REQ_ERR_IF(tile.l >= raster.n_levels);
     const rset &level = raster.rsets[tile.l];
     REQ_ERR_IF(tile.x >= level.w || tile.y >= level.h);
@@ -202,8 +201,9 @@ static int handler(request_rec *r) {
     apr_uint32_t bcol = static_cast<apr_uint32_t>((tile.x / BSZ) * BSZ);
     apr_uint32_t brow = static_cast<apr_uint32_t>((tile.y / BSZ) * BSZ);
 
+    // The raster.skip doesn't affect the folder name
     const char *bundlename = apr_psprintf(pool, 
-        "%s/L%02d/R%04xC%04x.bundle", cfg->source, blev, brow, bcol);
+        "%s/L%02d/R%04xC%04x.bundle", cfg->source, blev - raster.skip, brow, bcol);
 
     range_t tinfo;
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
