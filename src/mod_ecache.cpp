@@ -32,6 +32,7 @@ struct ecache_conf {
     // Raster configuration
     TiledRaster raster;
     char *source;
+    char *password;
     int indirect;  // Subrequests only
     int retries;   // If the source is on an object store
 };
@@ -274,7 +275,15 @@ static const command_rec cmds[] = {
         (cmd_func) ap_set_flag_slot,
         (void *)APR_OFFSETOF(ecache_conf, indirect),
         ACCESS_CONF, // availability
-        "If set, module only activates on subrequests"
+        "If set, module activates only on subrequests"
+    )
+
+    ,AP_INIT_TAKE1(
+        "Ecache_Password",
+        (cmd_func) ap_set_string_slot,
+        (void *)APR_OFFSETOF(ecache_conf, password),
+        ACCESS_CONF,
+        "If set, the request password paramter value has to match"
     )
 
     ,{NULL}
