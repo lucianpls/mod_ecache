@@ -32,15 +32,17 @@ struct ecache_conf {
     // Raster configuration
     TiledRaster raster;
     char *source;
-    char *password;
-    int indirect;  // Subrequests only
-    int retries;   // If the source is on an object store
+    char *password;  // Should be a table, in case multiple passwords are to be used
+    int indirect;    // Subrequests only
+    int retries;     // If the source is on an object store
+    int unauth_code; // Return code for password missmatch
 };
 
 static void *create_dir_config(apr_pool_t *p, char *dummy) {
     auto *c = reinterpret_cast<ecache_conf *>(
         apr_pcalloc(p, sizeof(ecache_conf)));
     c->retries = 4;
+    c->unauth_code = HTTP_NOT_FOUND; // Default action on password missmatch is decline
     return c;
 }
 
@@ -180,8 +182,25 @@ static int handler(request_rec *r) {
 
     auto *cfg = get_conf<ecache_conf>(r, &ecache_module);
     if ((cfg->indirect && !r->main)
+        || (cfg->password && !r->args) // Password has to be a parameter
         || !requestMatches(r, cfg->arr_rxp))
         return DECLINED;
+
+    apr_hash_t *params = argparse(r);
+    if (cfg->password && !params)
+        return cfg->unauth_code;
+
+    // Password checking should be a libahtse function
+    if (cfg->password) {
+        auto *pass = reinterpret_cast<const char *>(
+            apr_hash_get(params, "password", APR_HASH_KEY_STRING));
+        // No tolerance, has to have the right password
+        if (!pass || strcmp(pass, cfg->password)) {
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                "Invalid password in %s?%s", r->uri, r->args);
+            return cfg->unauth_code;
+        }
+    }
 
     // Our request
     apr_pool_t *pool = r->pool;
@@ -271,7 +290,7 @@ static const command_rec cmds[] = {
     )
 
     ,AP_INIT_FLAG(
-        "Ecache_Indirect",
+        "ECache_Indirect",
         (cmd_func) ap_set_flag_slot,
         (void *)APR_OFFSETOF(ecache_conf, indirect),
         ACCESS_CONF, // availability
@@ -279,11 +298,20 @@ static const command_rec cmds[] = {
     )
 
     ,AP_INIT_TAKE1(
-        "Ecache_Password",
+        "ECache_Password",
         (cmd_func) ap_set_string_slot,
         (void *)APR_OFFSETOF(ecache_conf, password),
         ACCESS_CONF,
         "If set, the request password paramter value has to match"
+    )
+
+    ,AP_INIT_TAKE1(
+        "ECache_UnauthorizedCode",
+        (cmd_func)ap_set_int_slot,
+        (void *)APR_OFFSETOF(ecache_conf, unauth_code),
+        ACCESS_CONF,
+        "HTTP error code to return when the password is set but the request doesn't "
+        "match it. It defaults to 404 (not found), which is the safest choice"
     )
 
     ,{NULL}
