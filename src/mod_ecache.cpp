@@ -23,15 +23,16 @@ extern module AP_MODULE_DECLARE_DATA ecache_module;
 APLOG_USE_MODULE(ecache);
 #endif
 
-static int BSZ = 128;
-static int TMASK = BSZ - 1;
-static int OBITS = 40;
+static const int BSZ = 128;
+static const int TMASK = BSZ - 1;
+static const int OBITS = 40;
 
 struct ecache_conf {
     apr_array_header_t *arr_rxp;
     // Raster configuration
     TiledRaster raster;
-    char *source;
+    char *source;    // Disk (or remote) path where cache resides
+    char *caching;   // The path to fetch tiles from and store them in this cache
     char *password;  // Should be a table, in case multiple passwords are to be used
     int indirect;    // Subrequests only
     int retries;     // If the source is on an object store
@@ -96,84 +97,218 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
     return HTTP_INTERNAL_SERVER_ERROR; \
 }
 
-static int file_pread(request_rec *r, storage_manager &mgr,
+// This should be part of AHTSE, but it would become ap dependent 
+// Also, APLOG_MARK only works within a module
+
+// Tile address should already be adjusted for skipped levels, and within source raster bounds
+static apr_status_t get_tile(request_rec *r, const char *remote, sloc_t tile, 
+    storage_manager &dst, char **psETag = NULL, const char * postfix = NULL)
+{
+    ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
+    if (!receive_filter) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            "Can't find receive filter, did you load mod_receive?");
+        return APR_BADARG;
+    }
+
+    receive_ctx rctx;
+    rctx.buffer = dst.buffer;
+    rctx.maxsize = dst.size;
+    rctx.size = 0;
+    char *stile = apr_psprintf(r->pool, "/%d/%d/%d/%d",
+        static_cast<int>(tile.z),
+        static_cast<int>(tile.l),
+        static_cast<int>(tile.y),
+        static_cast<int>(tile.x));
+
+    if (stile[1] == '0') // Don't send the M if zero
+        stile += 2;
+
+    char *sub_uri = apr_pstrcat(r->pool, remote, stile, postfix, NULL);
+    request_rec *sr = ap_sub_req_lookup_uri(sub_uri, r, r->output_filters);
+    ap_filter_t *rf = ap_add_output_filter_handle(receive_filter, &rctx, sr, sr->connection);
+    int rr_status = ap_run_sub_req(sr);
+    const char *sETag = apr_table_get(sr->headers_out, "ETag");
+
+    if (psETag && sETag)
+        *psETag = apr_pstrdup(r->pool, sETag);
+
+    ap_remove_output_filter(rf);
+    ap_destroy_sub_req(sr);
+
+    if (rr_status == APR_SUCCESS)
+        return APR_SUCCESS;
+    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, rr_status, r, "%s failed, %m", sub_uri, rr_status);
+    return rr_status;
+}
+
+// Use a range get to read from a remote file
+static int remote_pread(request_rec *r, const char *remote, apr_off_t offset, 
+    storage_manager &dst, int tries = 4)
+{
+    ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
+    if (!receive_filter) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            "Can't find receive filter, did you load mod_receive?");
+        return 0;
+    }
+
+    receive_ctx rctx;
+    rctx.buffer = dst.buffer;
+    rctx.maxsize = dst.size;
+    rctx.size = 0;
+
+    char *srange = apr_psprintf(r->pool,
+        "bytes=%" APR_UINT64_T_FMT "-%" APR_UINT64_T_FMT,
+        offset, offset + dst.size);
+
+    // S3 may return less than requested, so we retry the request a couple of times
+    bool failed = false;
+    apr_time_t now = apr_time_now();
+    do {
+        request_rec *sr = ap_sub_req_lookup_uri(remote, r, r->output_filters);
+        apr_table_setn(sr->headers_in, "Range", srange);
+        ap_filter_t *rf = ap_add_output_filter_handle(receive_filter, &rctx,
+            sr, sr->connection);
+        int status = ap_run_sub_req(sr);
+        ap_remove_output_filter(rf);
+        ap_destroy_sub_req(sr);
+
+        if (status != APR_SUCCESS)
+            failed = true;
+        else {
+            switch (sr->status) {
+            case HTTP_PARTIAL_CONTENT:
+                if (0 == tries--) {
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                        "Can't fetch data from %s, took %" APR_TIME_T_FMT "us",
+                        remote, apr_time_now() - now);
+                    failed = true;
+                }
+            case HTTP_OK:
+                break;
+            default: // Any other return code is unrecoverable
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                    "Can't fetch data from %s, remote returned %d",
+                    remote, sr->status);
+                failed = true;
+            }
+        }
+    } while (!failed && rctx.size != dst.size);
+
+    return failed ? 0 : rctx.size;
+}
+
+static int file_pread(request_rec *r, const char *fname, apr_off_t offset, storage_manager &dst) {
+    apr_file_t *pfh;
+
+    if (APR_SUCCESS !=
+        apr_file_open(&pfh, fname, READ_RIGHTS, 0, r->pool))
+        return 0;
+
+    apr_size_t sz = static_cast<apr_size_t>(dst.size);
+
+    if (APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
+        || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
+        sz = 0;
+
+    apr_file_close(pfh);
+    dst.size = static_cast<int>(sz);
+    return dst.size;
+}
+
+// Read tile from bundle, either local or remote
+static int bundle_pread(request_rec *r, storage_manager &mgr,
     apr_off_t offset, const char *name, const char *token = "BUNDLE")
 {
     auto  cfg = get_conf<ecache_conf>(r, &ecache_module);
     bool redirect = (strlen(name) > 3 && name[0] == ':' && name[1] == '/');
-    if (redirect) {
-        // Remote
-        name = name + 2;
-        ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
-        if (!receive_filter) {
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                "Can't find receive filter, did you load mod_receive?");
-            return 0;
-        }
+    if (redirect)
+        return remote_pread(r, name + 2, offset, mgr, cfg->retries);
+    else
+        return file_pread(r, name, offset, mgr);
+}
 
-        // buffer for the image
-        receive_ctx rctx;
-        rctx.buffer = mgr.buffer;
-        rctx.maxsize = mgr.size;
-        rctx.size = 0;
+// Called when caching and reading from the bundlename failed
+// Try to create a bundle file, retun success if it worked
+static int binit(request_rec *r, const char *bundlename)
+{
+    apr_file_t *bundlefile;
+    const int flags = APR_FOPEN_READ | APR_FOPEN_WRITE | APR_FOPEN_CREATE
+        | APR_FOPEN_SPARSE | APR_FOPEN_BINARY | APR_FOPEN_NOCLEANUP;
+    apr_status_t stat = apr_file_open(&bundlefile, bundlename, flags, 0, r->pool);
+    if (stat != APR_SUCCESS)
+        return stat;
 
-        char *range = apr_psprintf(r->pool,
-            "bytes=%" APR_UINT64_T_FMT "-%" APR_UINT64_T_FMT,
-            offset, offset + mgr.size);
+    apr_file_trunc(bundlefile, 64 + BSZ * BSZ * 8);
+    apr_file_seek(bundlefile, 0, APR_SET);
+    apr_file_close(bundlefile);
 
-        // S3 may return less than requested, so we retry the request a couple of times
-        int tries = cfg->retries;
-        bool failed = false;
-        apr_time_t now = apr_time_now();
-        do {
-            request_rec *sr = ap_sub_req_lookup_uri(name, r, r->output_filters);
-            apr_table_setn(sr->headers_in, "Range", range);
-            ap_filter_t *rf = ap_add_output_filter_handle(receive_filter, &rctx,
-                sr, sr->connection);
-            int status = ap_run_sub_req(sr);
-            ap_remove_output_filter(rf);
-            ap_destroy_sub_req(sr);
+    return APR_SUCCESS;
+}
 
-            if (status != APR_SUCCESS)
-                failed = true;
-            else {
-                switch (sr->status) {
-                case HTTP_PARTIAL_CONTENT: 
-                    if (0 == tries--) {
-                        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                            "Can't fetch data from %s, took %" APR_TIME_T_FMT "us",
-                            name, apr_time_now() - now);
-                        failed = true;
-                    }
-                case HTTP_OK:
-                    break;
-                default: // Any other return code is unrecoverable
-                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                        "Can't fetch data from %s, remote returned %d",
-                            name, sr->status);
-                    failed = true;
-                }
-            }
-        } while (!failed && rctx.size != mgr.size);
+// HTTP return
+// Fetch the tile from remote, store it and serve it
+static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
+{
+#define MODIFY_RIGHTS (APR_FOPEN_WRITE | APR_FOPEN_BINARY | APR_FOPEN_XTHREAD | APR_FOPEN_SHARELOCK | APR_FOPEN_LARGEFILE | APR_FOPEN_NOCLEANUP)
 
-        return failed ? 0 : rctx.size;
-    } // Redirect read
+    auto *cfg = get_conf<ecache_conf>(r, &ecache_module);
 
+    char *sETag = NULL;
+    storage_manager tilebuf;
+    tilebuf.size = cfg->raster.maxtilesize;
+    tilebuf.buffer = static_cast<char *>(apr_palloc(r->pool, tilebuf.size));
+    if (!tilebuf.buffer) {
+        ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "Out of memory");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    // Undo the level adjustment, so the remote gets the right tile
+    tile.l -= cfg->raster.skip;
+
+    if (APR_SUCCESS != get_tile(r, cfg->caching, tile, tilebuf, &sETag))
+        return HTTP_INTERNAL_SERVER_ERROR;
+
+    // Got the tile, store it
     apr_file_t *pfh;
+    apr_status_t stat = apr_file_open(&pfh, bundlename, MODIFY_RIGHTS, 0, r->pool);
+    if (APR_SUCCESS != stat) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Can't open file");
+    }
+    else {
+        apr_off_t idx_offset; // Where the tile goes
+        apr_file_lock(pfh, APR_FLOCK_EXCLUSIVE); // ignore the status, go ahead anyhow
+        apr_file_seek(pfh, APR_END, &idx_offset);
 
-    if (APR_SUCCESS != 
-        apr_file_open(&pfh, name, READ_RIGHTS | APR_FOPEN_BUFFERED, 0, r->pool))
-        return 0;
+        range_t tinfo;
+        tinfo.offset = idx_offset;
+        tinfo.size = tilebuf.size;
 
-    apr_size_t sz = static_cast<apr_size_t>(mgr.size);
+        apr_size_t size = tilebuf.size;
+        apr_file_write(pfh, tilebuf.buffer, &size);
+        idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
+        apr_file_seek(pfh, APR_SET, &idx_offset);
+        idx_offset = tinfo.offset; // Keep a clean copy
 
-    if (APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset) 
-        || APR_SUCCESS != apr_file_read(pfh, mgr.buffer, &sz))
-        sz = 0;
+        // prepare the joined index
+        tinfo.offset = htole64(tinfo.offset + tinfo.size << OBITS);
+        size = 8; // sizeof(tinfo.offset)
+        apr_file_write(pfh, &tinfo.offset, &size);
+        apr_file_unlock(pfh);
+        apr_file_close(pfh);
+        // idx_offset has the local tile offset to compute the ETag
+        // Use the same formula as the main handler
 
-    apr_file_close(pfh);
-    mgr.size = static_cast<int>(sz);
-    return mgr.size;
+        sETag = reinterpret_cast<char *>(apr_palloc(r->pool, 16));
+        // Very poor etag
+        tobase32(cfg->raster.seed ^ ((tinfo.size < 1) ^ (idx_offset << 7)), sETag);
+    }
+    
+    // The tile data is still int the buffer
+    // Don't check the ETag since it was just fetched
+    apr_table_set(r->headers_out, "ETag", sETag);
+    return sendImage(r, tilebuf);
 }
 
 static int handler(request_rec *r) {
@@ -226,24 +361,32 @@ static int handler(request_rec *r) {
         "%s/L%02d/R%04xC%04x.bundle", cfg->source, blev - raster.skip, brow, bcol);
 
     range_t tinfo;
+    tinfo.offset = 0;
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
 
     storage_manager sm(&tinfo.offset, sizeof(tinfo.offset));
-    if (sizeof(tinfo.offset) != file_pread(r, sm, idx_offset, bundlename)) {
-        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
-            "File access error in %s", bundlename);
-        return sendEmptyTile(r, raster.missing);
+    if (sizeof(tinfo.offset) != bundle_pread(r, sm, idx_offset, bundlename)) {
+        if (!cfg->caching || APR_SUCCESS != binit(r, bundlename)) {
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
+                "File access error in %s", bundlename);
+            return sendEmptyTile(r, raster.missing);
+        }
     }
 
     // Unpack the index
     tinfo.offset = le64toh(tinfo.offset);
     tinfo.size = tinfo.offset >> OBITS;
     tinfo.offset &= (static_cast<apr_uint64_t>(1) << OBITS) -1;
+
+    // Unchecked tile, cache it and serve it
+    if (cfg->caching && tinfo.size == 0 && tinfo.offset > 64)
+        return dynacache(r, tile, bundlename);
+
     if (tinfo.size < 4)
         return sendEmptyTile(r, raster.missing);
 
     SERR_IF(MAX_TILE_SIZE < tinfo.size,  
-        apr_psprintf(pool, "Tile too large from %s", r->uri));
+        apr_psprintf(pool, "Tile too large, %s", r->uri));
 
     // TODO: Check ETAG
     char ETag[16];
@@ -260,7 +403,7 @@ static int handler(request_rec *r) {
         static_cast<apr_size_t>(tinfo.size)));
 
     SERR_IF(!sm.buffer, "Allocation error");
-    SERR_IF(sm.size != file_pread(r, sm, tinfo.offset, bundlename), 
+    SERR_IF(sm.size != bundle_pread(r, sm, tinfo.offset, bundlename), 
         apr_psprintf(pool, "Data read error from %s", bundlename));
 
     // Got the data, send it
@@ -275,10 +418,18 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec cmds[] = {
     AP_INIT_TAKE1(
         "ECache_RegExp",
-        (cmd_func) set_regexp,
+        (cmd_func)set_regexp,
         0, // self pass arg, added to the config address
         ACCESS_CONF,
         "The request pattern the URI has to match"
+    )
+
+    ,AP_INIT_TAKE1(
+        "ECache_Source",
+        (cmd_func)ap_set_string_slot,
+        (void *)APR_OFFSETOF(ecache_conf, caching),
+        ACCESS_CONF,
+        "Set to a redirct path containing the AHTSE service which will be cached in this ecache"
     )
 
     ,AP_INIT_TAKE1(
