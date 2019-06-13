@@ -202,14 +202,42 @@ static int remote_pread(request_rec *r, const char *remote, apr_off_t offset,
     return failed ? 0 : rctx.size;
 }
 
-static int file_pread(request_rec *r, const char *fname, apr_off_t offset, storage_manager &dst) {
+static int file_pread(request_rec *r, const char *fname, apr_off_t offset, 
+    storage_manager &dst, bool locking = false)
+{
     apr_file_t *pfh;
-
-    if (APR_SUCCESS !=
-        apr_file_open(&pfh, fname, READ_RIGHTS, 0, r->pool))
-        return 0;
-
     apr_size_t sz = static_cast<apr_size_t>(dst.size);
+
+    if (locking) {
+        if (APR_SUCCESS !=
+            apr_file_open(&pfh, fname,
+                READ_RIGHTS | APR_FOPEN_SHARELOCK | APR_FOPEN_XTHREAD | APR_FOPEN_NOCLEANUP,
+                0, r->pool))
+            return 0;
+
+
+        apr_status_t stat =
+            apr_file_lock(pfh, APR_FLOCK_SHARED);
+
+        if (stat == APR_SUCCESS) {
+            if (APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
+                || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
+                sz = 0;
+        }
+        else {
+            sz = 0;
+        }
+
+        apr_file_unlock(pfh);
+        apr_file_close(pfh);
+        dst.size = static_cast<int>(sz);
+        return dst.size;
+    }
+
+    // Non locking
+    if (APR_SUCCESS !=
+        apr_file_open(&pfh, fname, READ_RIGHTS | APR_FOPEN_NOCLEANUP, 0, r->pool))
+        return 0;
 
     if (APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
         || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
@@ -229,7 +257,7 @@ static int bundle_pread(request_rec *r, storage_manager &mgr,
     if (redirect)
         return remote_pread(r, name + 2, offset, mgr, cfg->retries);
     else
-        return file_pread(r, name, offset, mgr);
+        return file_pread(r, name, offset, mgr, cfg->caching == nullptr);
 }
 
 // Called when caching and reading from the bundlename failed
