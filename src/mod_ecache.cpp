@@ -100,15 +100,17 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
 // This should be part of AHTSE, but it would become ap dependent 
 // Also, APLOG_MARK only works within a module
 
-// Tile address should already be adjusted for skipped levels, and within source raster bounds
-static apr_status_t get_tile(request_rec *r, const char *remote, sloc_t tile, 
+// Tile address should already be adjusted for skipped levels, 
+// and within source raster bounds
+// returns success or remote code
+static int get_tile(request_rec *r, const char *remote, sloc_t tile, 
     storage_manager &dst, char **psETag = NULL, const char * postfix = NULL)
 {
     ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
     if (!receive_filter) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
             "Can't find receive filter, did you load mod_receive?");
-        return APR_BADARG;
+        return HTTP_INTERNAL_SERVER_ERROR;
     }
 
     receive_ctx rctx;
@@ -124,10 +126,11 @@ static apr_status_t get_tile(request_rec *r, const char *remote, sloc_t tile,
     if (stile[1] == '0') // Don't send the M if zero
         stile += 2;
 
-    char *sub_uri = apr_pstrcat(r->pool, remote, stile, postfix, NULL);
+    char *sub_uri = apr_pstrcat(r->pool, remote, "/tile", stile, postfix, NULL);
     request_rec *sr = ap_sub_req_lookup_uri(sub_uri, r, r->output_filters);
     ap_filter_t *rf = ap_add_output_filter_handle(receive_filter, &rctx, sr, sr->connection);
-    int rr_status = ap_run_sub_req(sr);
+    int code = ap_run_sub_req(sr); // returns http code
+    dst.size = rctx.size;
     const char *sETag = apr_table_get(sr->headers_out, "ETag");
 
     if (psETag && sETag)
@@ -136,10 +139,10 @@ static apr_status_t get_tile(request_rec *r, const char *remote, sloc_t tile,
     ap_remove_output_filter(rf);
     ap_destroy_sub_req(sr);
 
-    if (rr_status == APR_SUCCESS)
+    if (code == APR_SUCCESS)
         return APR_SUCCESS;
-    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, rr_status, r, "%s failed, %m", sub_uri, rr_status);
-    return rr_status;
+    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", sub_uri, code);
+    return code;
 }
 
 // Use a range get to read from a remote file
@@ -234,14 +237,18 @@ static int bundle_pread(request_rec *r, storage_manager &mgr,
 static int binit(request_rec *r, const char *bundlename)
 {
     apr_file_t *bundlefile;
-    const int flags = APR_FOPEN_READ | APR_FOPEN_WRITE | APR_FOPEN_CREATE
-        | APR_FOPEN_SPARSE | APR_FOPEN_BINARY | APR_FOPEN_NOCLEANUP;
+    const int flags =
+        APR_FOPEN_WRITE 
+        | APR_FOPEN_CREATE
+        | APR_FOPEN_EXCL
+        | APR_FOPEN_SPARSE 
+        | APR_FOPEN_BINARY 
+        | APR_FOPEN_NOCLEANUP;
     apr_status_t stat = apr_file_open(&bundlefile, bundlename, flags, 0, r->pool);
     if (stat != APR_SUCCESS)
         return stat;
 
     apr_file_trunc(bundlefile, 64 + BSZ * BSZ * 8);
-    apr_file_seek(bundlefile, 0, APR_SET);
     apr_file_close(bundlefile);
 
     return APR_SUCCESS;
@@ -251,7 +258,8 @@ static int binit(request_rec *r, const char *bundlename)
 // Fetch the tile from remote, store it and serve it
 static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
 {
-#define MODIFY_RIGHTS (APR_FOPEN_WRITE | APR_FOPEN_BINARY | APR_FOPEN_XTHREAD | APR_FOPEN_SHARELOCK | APR_FOPEN_LARGEFILE | APR_FOPEN_NOCLEANUP)
+    const int flags = APR_FOPEN_WRITE | APR_FOPEN_BINARY | APR_FOPEN_XTHREAD
+        | APR_FOPEN_SHARELOCK | APR_FOPEN_LARGEFILE | APR_FOPEN_NOCLEANUP;
 
     auto *cfg = get_conf<ecache_conf>(r, &ecache_module);
 
@@ -267,18 +275,19 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
 
-    if (APR_SUCCESS != get_tile(r, cfg->caching, tile, tilebuf, &sETag))
-        return HTTP_INTERNAL_SERVER_ERROR;
+    int code = get_tile(r, cfg->caching, tile, tilebuf, &sETag);
+    if (APR_SUCCESS != code)
+        return code;
 
     // Got the tile, store it
     apr_file_t *pfh;
-    apr_status_t stat = apr_file_open(&pfh, bundlename, MODIFY_RIGHTS, 0, r->pool);
+    apr_status_t stat = apr_file_open(&pfh, bundlename, flags, 0, r->pool);
     if (APR_SUCCESS != stat) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Can't open file");
     }
     else {
-        apr_off_t idx_offset; // Where the tile goes
         apr_file_lock(pfh, APR_FLOCK_EXCLUSIVE); // ignore the status, go ahead anyhow
+        apr_off_t idx_offset = 0; // Where the tile goes
         apr_file_seek(pfh, APR_END, &idx_offset);
 
         range_t tinfo;
@@ -292,7 +301,7 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
         idx_offset = tinfo.offset; // Keep a clean copy
 
         // prepare the joined index
-        tinfo.offset = htole64(tinfo.offset + tinfo.size << OBITS);
+        tinfo.offset = htole64(tinfo.offset + (tinfo.size << OBITS));
         size = 8; // sizeof(tinfo.offset)
         apr_file_write(pfh, &tinfo.offset, &size);
         apr_file_unlock(pfh);
@@ -379,7 +388,7 @@ static int handler(request_rec *r) {
     tinfo.offset &= (static_cast<apr_uint64_t>(1) << OBITS) -1;
 
     // Unchecked tile, cache it and serve it
-    if (cfg->caching && tinfo.size == 0 && tinfo.offset > 64)
+    if (cfg->caching && tinfo.size == 0 && tinfo.offset == 0)
         return dynacache(r, tile, bundlename);
 
     if (tinfo.size < 4)
