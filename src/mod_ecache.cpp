@@ -462,14 +462,6 @@ static const command_rec cmds[] = {
     )
 
     ,AP_INIT_TAKE1(
-        "ECache_Source",
-        (cmd_func)ap_set_string_slot,
-        (void *)APR_OFFSETOF(ecache_conf, caching),
-        ACCESS_CONF,
-        "Set to a redirct path containing the AHTSE service which will be cached in this ecache"
-    )
-
-    ,AP_INIT_TAKE1(
         "ECache_ConfigurationFile",
         (cmd_func) configure,
         0, // self pass arg, added to the config address
@@ -500,6 +492,14 @@ static const command_rec cmds[] = {
         ACCESS_CONF,
         "HTTP error code to return when the password is set but the request doesn't "
         "match it. It defaults to 404 (not found), which is the safest choice"
+    )
+
+    ,AP_INIT_TAKE1(
+        "ECache_Source",
+        (cmd_func)ap_set_string_slot,
+        (void *)APR_OFFSETOF(ecache_conf, caching),
+        ACCESS_CONF,
+        "Set to a redirect path containing the AHTSE service which will be cached in this ecache"
     )
 
     ,{NULL}
