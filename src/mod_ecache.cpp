@@ -272,7 +272,9 @@ static int binit(request_rec *r, const char *bundlename)
         | APR_FOPEN_SPARSE 
         | APR_FOPEN_BINARY 
         | APR_FOPEN_NOCLEANUP;
-    apr_status_t stat = apr_file_open(&bundlefile, bundlename, flags, 0, r->pool);
+    apr_status_t stat = apr_file_open(&bundlefile, bundlename, 
+                  flags, APR_FPROT_OS_DEFAULT, r->pool);
+
     if (stat != APR_SUCCESS)
         return stat;
 
