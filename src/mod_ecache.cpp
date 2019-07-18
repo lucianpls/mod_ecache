@@ -427,7 +427,6 @@ static int handler(request_rec *r) {
     SERR_IF(MAX_TILE_SIZE < tinfo.size,  
         apr_psprintf(pool, "Tile too large, %s", r->uri));
 
-    // TODO: Check ETAG
     char ETag[16];
     // Very poor etag
     tobase32(raster.seed ^ ((tinfo.size < 1) ^ (tinfo.offset << 7)), ETag);
