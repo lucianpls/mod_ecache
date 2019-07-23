@@ -65,7 +65,7 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
     if (c->raster.size.z != 1)
         return "Extra dimension not supported";
 
-    line = apr_table_get(kvp, "Datapath");
+    line = apr_table_get(kvp, "DataPath");
     if (!line)
         return "DataPath directive missing";
     c->dpath = apr_pstrdup(cmd->pool, line);

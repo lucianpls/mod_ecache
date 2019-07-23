@@ -26,6 +26,10 @@ If set, the module activates only on subrequests
 
 Most of the basic AHTSE raster configuration are supported.
 
+* *DataPath* LocalPath  
+
+A folder path where the LNN folders are located.  Should be a local path when caching
+
 * *SkippedLevels* N  
 
 The convention is that level 0 has only 1 tile. This is used to block requests for tiles outside of the bounding box.  For some cases such as WGS84, the esri convention is to have two tiles (possible 4) at level 0.  Setting SkippedLevels to 1, allows those caches to be served.  The folder naming is not affected.
