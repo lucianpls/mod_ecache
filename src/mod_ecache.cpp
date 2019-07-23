@@ -32,10 +32,13 @@ struct ecache_conf {
     // Raster configuration
     TiledRaster raster;
     char *dpath;     // Disk (or remote) path where cache resides
-    char *caching;   // The path to fetch tiles from and store them in this cache
+
+    char *source;    // The path to fetch tiles from and store them in this cache
+    char *postfix;   // the source request postfix
+    int retries;     // If the source is on an object store that may fail
+
     char *password;  // Should be a table, in case multiple passwords are to be used
     int indirect;    // Subrequests only
-    int retries;     // If the source is on an object store
     int unauth_code; // Return code for password missmatch
 };
 
@@ -257,7 +260,7 @@ static int bundle_pread(request_rec *r, storage_manager &mgr,
     if (redirect)
         return remote_pread(r, name + 2, offset, mgr, cfg->retries);
     else
-        return file_pread(r, name, offset, mgr, cfg->caching == nullptr);
+        return file_pread(r, name, offset, mgr, cfg->source == nullptr);
 }
 
 // Called when caching and reading from the bundlename failed
@@ -305,7 +308,7 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
 
-    int code = get_tile(r, cfg->caching, tile, tilebuf, &sETag);
+    int code = get_tile(r, cfg->source, tile, tilebuf, &sETag);
     if (APR_SUCCESS != code)
         return code;
 
@@ -405,7 +408,7 @@ static int handler(request_rec *r) {
 
     storage_manager sm(&tinfo.offset, sizeof(tinfo.offset));
     if (sizeof(tinfo.offset) != bundle_pread(r, sm, idx_offset, bundlename)) {
-        if (!cfg->caching || APR_SUCCESS != binit(r, bundlename)) {
+        if (!cfg->source || APR_SUCCESS != binit(r, bundlename)) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
                 "File access error in %s", bundlename);
             return sendEmptyTile(r, raster.missing);
@@ -418,7 +421,7 @@ static int handler(request_rec *r) {
     tinfo.offset &= (static_cast<apr_uint64_t>(1) << OBITS) -1;
 
     // Unchecked tile, cache it and serve it
-    if (cfg->caching && tinfo.size == 0 && tinfo.offset == 0)
+    if (cfg->source && tinfo.size == 0 && tinfo.offset == 0)
         return dynacache(r, tile, bundlename);
 
     if (tinfo.size < 4)
@@ -497,8 +500,8 @@ static const command_rec cmds[] = {
 
     ,AP_INIT_TAKE1(
         "ECache_Source",
-        (cmd_func)ap_set_string_slot,
-        (void *)APR_OFFSETOF(ecache_conf, caching),
+        (cmd_func) set_source<ecache_conf>,
+        0,
         ACCESS_CONF,
         "Set to a redirect path containing the AHTSE service which will be cached in this ecache"
     )
