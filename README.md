@@ -9,7 +9,7 @@ May appear multiple times, the tile requests have to match at least one of these
 * *ECache_ConfigurationFile* File  
 File which contains the AHTSE configuration directives for this location
 
-* *ECache_Source* Path  
+* *ECache_Source* Redirect_Path  Postfix
 If set, this should be an internal redirect path where a tile service exists. Then the bundled cache will be built from tile from this location, as needed. Should start from http docroot
 
 * *ECache_Password* word  
