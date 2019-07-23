@@ -107,7 +107,7 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
 // and within source raster bounds
 // returns success or remote code
 static int get_tile(request_rec *r, const char *remote, sloc_t tile, 
-    storage_manager &dst, char **psETag = NULL, const char * postfix = NULL)
+    storage_manager &dst, char **psETag = NULL, const char *postfix = NULL)
 {
     ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
     if (!receive_filter) {
@@ -308,7 +308,7 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
 
-    int code = get_tile(r, cfg->source, tile, tilebuf, &sETag);
+    int code = get_tile(r, cfg->source, tile, tilebuf, &sETag, cfg->postfix);
     if (APR_SUCCESS != code)
         return code;
 
