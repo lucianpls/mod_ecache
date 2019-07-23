@@ -31,7 +31,7 @@ struct ecache_conf {
     apr_array_header_t *arr_rxp;
     // Raster configuration
     TiledRaster raster;
-    char *source;    // Disk (or remote) path where cache resides
+    char *dpath;     // Disk (or remote) path where cache resides
     char *caching;   // The path to fetch tiles from and store them in this cache
     char *password;  // Should be a table, in case multiple passwords are to be used
     int indirect;    // Subrequests only
@@ -65,13 +65,13 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
     if (c->raster.size.z != 1)
         return "Extra dimension not supported";
 
-    line = apr_table_get(kvp, "Source");
+    line = apr_table_get(kvp, "Datapath");
     if (!line)
-        return "Source directive missing";
-    c->source = apr_pstrdup(cmd->pool, line);
+        return "DataPath directive missing";
+    c->dpath = apr_pstrdup(cmd->pool, line);
     // Trim the last slash in the path
-    if ((c->source[strlen(c->source) - 1] == '/') || (c->source[strlen(c->source) - 1] == '\\'))
-        c->source[strlen(c->source) - 1] = 0;
+    if ((c->dpath[strlen(c->dpath) - 1] == '/') || (c->dpath[strlen(c->dpath) - 1] == '\\'))
+        c->dpath[strlen(c->dpath) - 1] = 0;
 
     line = apr_table_get(kvp, "RetryCount");
     c->retries = 1 + (line ? atoi(line) : c->retries);
@@ -397,7 +397,7 @@ static int handler(request_rec *r) {
 
     // The raster.skip doesn't affect the folder name
     const char *bundlename = apr_psprintf(pool, 
-        "%s/L%02d/R%04xC%04x.bundle", cfg->source, blev - raster.skip, brow, bcol);
+        "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, blev - raster.skip, brow, bcol);
 
     range_t tinfo;
     tinfo.offset = 0;
