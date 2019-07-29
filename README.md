@@ -1,5 +1,5 @@
 # mod_ecache
-An AHTSE httpd caching tile handler for Esri V2 bundle format
+An AHTSE httpd caching tile handler using Esri V2 bundle format
 
 ## Apache Configuration Directives
 
