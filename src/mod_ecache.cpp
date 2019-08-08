@@ -278,8 +278,15 @@ static int binit(request_rec *r, const char *bundlename)
     apr_status_t stat = apr_file_open(&bundlefile, bundlename, 
                   flags, APR_FPROT_OS_DEFAULT, r->pool);
 
-    if (stat != APR_SUCCESS)
+    if (stat != APR_SUCCESS) {
+        // Maybe it was created already, check thta it can be read
+        const int rflags = APR_FOPEN_READ | APR_FOPEN_NOCLEANUP;
+        apr_status_t stat = apr_file_open(&bundlefile, bundlename, rflags, 0, r->pool);
+        if (APR_SUCCESS == stat)
+            apr_file_close(bundlefile);
+        // Report success or failure
         return stat;
+    }
 
     apr_file_trunc(bundlefile, 64 + BSZ * BSZ * 8);
     apr_file_close(bundlefile);
@@ -316,10 +323,10 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     apr_file_t *pfh;
     apr_status_t stat = apr_file_open(&pfh, bundlename, flags, 0, r->pool);
     if (APR_SUCCESS != stat) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Can't open file");
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Can't update file %s", bundlename);
     }
     else {
-        apr_file_lock(pfh, APR_FLOCK_EXCLUSIVE); // ignore the status, go ahead anyhow
+        apr_file_lock(pfh, APR_FLOCK_EXCLUSIVE); // ignore the status
         apr_off_t idx_offset = 0; // Where the tile goes
         apr_file_seek(pfh, APR_END, &idx_offset);
 
@@ -348,7 +355,7 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     }
     
     // The tile data is still int the buffer
-    // Don't check the ETag since it was just fetched
+    // Don't check the ETag since it was just computed
     apr_table_set(r->headers_out, "ETag", sETag);
     return sendImage(r, tilebuf);
 }
@@ -402,17 +409,21 @@ static int handler(request_rec *r) {
     const char *bundlename = apr_psprintf(pool, 
         "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, blev - raster.skip, brow, bcol);
 
-    range_t tinfo;
-    tinfo.offset = 0;
+    range_t tinfo = { 0, 0 };
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
 
     storage_manager sm(&tinfo.offset, sizeof(tinfo.offset));
     if (sizeof(tinfo.offset) != bundle_pread(r, sm, idx_offset, bundlename)) {
-        if (!cfg->source || APR_SUCCESS != binit(r, bundlename)) {
+        if (!cfg->source)
+            return sendEmptyTile(r, raster.missing);
+        // We have a source but no bundle? Try creating it
+        if (APR_SUCCESS != binit(r, bundlename)) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
                 "File access error in %s", bundlename);
             return sendEmptyTile(r, raster.missing);
         }
+        // We have a fresh bundle
+        tinfo.offset = tinfo.size = 0;
     }
 
     // Unpack the index
