@@ -2,6 +2,7 @@
  *
  * An AHTSE source module that serves tiles 
  * from Esri compact cache V2 bundles
+ * It can cache a source service in bundles
  *
  * Lucian Plesea
  * (C) 2019
@@ -121,10 +122,8 @@ static int get_tile(request_rec *r, const char *remote, sloc_t tile,
     rctx.maxsize = dst.size;
     rctx.size = 0;
     char *stile = apr_psprintf(r->pool, "/%d/%d/%d/%d",
-        static_cast<int>(tile.z),
-        static_cast<int>(tile.l),
-        static_cast<int>(tile.y),
-        static_cast<int>(tile.x));
+        static_cast<int>(tile.z), static_cast<int>(tile.l),
+        static_cast<int>(tile.y), static_cast<int>(tile.x));
 
     if (stile[1] == '0') // Don't send the M if zero
         stile += 2;
@@ -209,7 +208,7 @@ static int file_pread(request_rec *r, const char *fname, apr_off_t offset,
     storage_manager &dst, bool locking = false)
 {
     apr_file_t *pfh;
-    apr_size_t sz = static_cast<apr_size_t>(dst.size);
+    apr_size_t size = static_cast<apr_size_t>(dst.size);
 
     if (locking) {
         if (APR_SUCCESS !=
@@ -218,18 +217,14 @@ static int file_pread(request_rec *r, const char *fname, apr_off_t offset,
                 0, r->pool))
             return 0;
 
-
-        apr_status_t stat =
-            apr_file_lock(pfh, APR_FLOCK_SHARED);
-
-        if (stat == APR_SUCCESS
+        if (APR_SUCCESS != apr_file_lock(pfh, APR_FLOCK_SHARED)
             || APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
-            || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
-                sz = 0;
+            || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &size))
+                size = 0;
 
         apr_file_unlock(pfh);
         apr_file_close(pfh);
-        dst.size = static_cast<int>(sz);
+        dst.size = static_cast<int>(size);
         return dst.size;
     }
 
@@ -239,11 +234,11 @@ static int file_pread(request_rec *r, const char *fname, apr_off_t offset,
         return 0;
 
     if (APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
-        || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
-        sz = 0;
+        || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &size))
+        size = 0;
 
     apr_file_close(pfh);
-    dst.size = static_cast<int>(sz);
+    dst.size = static_cast<int>(size);
     return dst.size;
 }
 
@@ -263,21 +258,17 @@ static int bundle_pread(request_rec *r, storage_manager &mgr,
 // Try to create a bundle file, retun success if it worked
 static int binit(request_rec *r, const char *bundlename)
 {
+    const int flags = APR_FOPEN_WRITE | APR_FOPEN_CREATE
+        | APR_FOPEN_EXCL | APR_FOPEN_SPARSE 
+        | APR_FOPEN_BINARY | APR_FOPEN_NOCLEANUP;
     apr_file_t *bundlefile;
-    const int flags =
-        APR_FOPEN_WRITE 
-        | APR_FOPEN_CREATE
-        | APR_FOPEN_EXCL
-        | APR_FOPEN_SPARSE 
-        | APR_FOPEN_BINARY 
-        | APR_FOPEN_NOCLEANUP;
     apr_status_t stat = apr_file_open(&bundlefile, bundlename, 
                   flags, APR_FPROT_OS_DEFAULT, r->pool);
 
     if (stat != APR_SUCCESS) {
         // Maybe it was created already, check thta it can be read
-        const int rflags = APR_FOPEN_READ | APR_FOPEN_NOCLEANUP;
-        apr_status_t stat = apr_file_open(&bundlefile, bundlename, rflags, 0, r->pool);
+        const int rflags = READ_RIGHTS | APR_FOPEN_NOCLEANUP;
+        stat = apr_file_open(&bundlefile, bundlename, rflags, 0, r->pool);
         if (APR_SUCCESS == stat)
             apr_file_close(bundlefile);
         // Report success or failure
@@ -286,7 +277,6 @@ static int binit(request_rec *r, const char *bundlename)
 
     apr_file_trunc(bundlefile, 64 + BSZ * BSZ * 8);
     apr_file_close(bundlefile);
-
     return APR_SUCCESS;
 }
 
