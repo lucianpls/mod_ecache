@@ -222,14 +222,10 @@ static int file_pread(request_rec *r, const char *fname, apr_off_t offset,
         apr_status_t stat =
             apr_file_lock(pfh, APR_FLOCK_SHARED);
 
-        if (stat == APR_SUCCESS) {
-            if (APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
-                || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
+        if (stat == APR_SUCCESS
+            || APR_SUCCESS != apr_file_seek(pfh, APR_SET, &offset)
+            || APR_SUCCESS != apr_file_read(pfh, dst.buffer, &sz))
                 sz = 0;
-        }
-        else {
-            sz = 0;
-        }
 
         apr_file_unlock(pfh);
         apr_file_close(pfh);
