@@ -51,8 +51,7 @@ static void *create_dir_config(apr_pool_t *p, char *dummy) {
     return c;
 }
 
-static const char *set_regexp(cmd_parms *cmd, ecache_conf *c, const char *pattern)
-{
+static const char *set_regexp(cmd_parms *cmd, ecache_conf *c, const char *pattern) {
     return add_regexp_to_array(cmd->pool, &c->arr_rxp, pattern);
 }
 
@@ -91,60 +90,12 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
 }
 
 // Quiet error
-#define REQ_ERR_IF(X) if (X) {\
-    return HTTP_BAD_REQUEST; \
-}
+#define REQ_ERR_IF(X) if (X) { return HTTP_BAD_REQUEST; }
 
 // Logged error
 #define SERR_IF(X, msg) if (X) { \
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "%s", msg);\
     return HTTP_INTERNAL_SERVER_ERROR; \
-}
-
-// This should be part of AHTSE, but it would become ap dependent 
-// Also, APLOG_MARK only works within a module
-
-// Tile address should already be adjusted for skipped levels, 
-// and within source raster bounds
-// returns success or remote code
-static int get_tile(request_rec *r, const char *remote, sloc_t tile, 
-    storage_manager &dst, char **psETag = NULL, const char *postfix = NULL)
-{
-    ap_filter_rec_t *receive_filter = ap_get_output_filter_handle("Receive");
-    if (!receive_filter) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-            "Can't find receive filter, did you load mod_receive?");
-        return HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    receive_ctx rctx;
-    rctx.buffer = dst.buffer;
-    rctx.maxsize = dst.size;
-    rctx.size = 0;
-    char *stile = apr_psprintf(r->pool, "/%d/%d/%d/%d",
-        static_cast<int>(tile.z), static_cast<int>(tile.l),
-        static_cast<int>(tile.y), static_cast<int>(tile.x));
-
-    if (stile[1] == '0') // Don't send the M if zero
-        stile += 2;
-
-    char *sub_uri = apr_pstrcat(r->pool, remote, "/tile", stile, postfix, NULL);
-    request_rec *sr = ap_sub_req_lookup_uri(sub_uri, r, r->output_filters);
-    ap_filter_t *rf = ap_add_output_filter_handle(receive_filter, &rctx, sr, sr->connection);
-    int code = ap_run_sub_req(sr); // returns http code
-    dst.size = rctx.size;
-    const char *sETag = apr_table_get(sr->headers_out, "ETag");
-
-    if (psETag && sETag)
-        *psETag = apr_pstrdup(r->pool, sETag);
-
-    ap_remove_output_filter(rf);
-    ap_destroy_sub_req(sr);
-
-    if (code == APR_SUCCESS)
-        return APR_SUCCESS;
-    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", sub_uri, code);
-    return code;
 }
 
 // Use a range get to read from a remote file
@@ -301,9 +252,12 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
 
-    int code = get_tile(r, cfg->source, tile, tilebuf, &sETag, cfg->postfix);
-    if (APR_SUCCESS != code)
+    int code = get_remote_tile(r, cfg->source, tile, tilebuf, &sETag, cfg->postfix);
+    if (APR_SUCCESS != code) {
+        ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", 
+            pMRLC(r->pool, cfg->source, tile, cfg->postfix), code);
         return code;
+    }
 
     // Got the tile, store it
     apr_file_t *pfh;
