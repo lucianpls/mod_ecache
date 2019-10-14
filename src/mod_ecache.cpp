@@ -35,7 +35,7 @@ struct ecache_conf {
     char *dpath;     // Disk (or remote) path where cache resides
 
     char *source;    // The path to fetch tiles from and store them in this cache
-    char *postfix;   // the source request postfix
+    char *suffix;   // the source request suffix
     int retries;     // If the source is on an object store that may fail
 
     char *password;  // Should be a table, in case multiple passwords are to be used
@@ -252,10 +252,10 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
 
-    int code = get_remote_tile(r, cfg->source, tile, tilebuf, &sETag, cfg->postfix);
+    int code = get_remote_tile(r, cfg->source, tile, tilebuf, &sETag, cfg->suffix);
     if (APR_SUCCESS != code) {
         ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", 
-            pMRLC(r->pool, cfg->source, tile, cfg->postfix), code);
+            pMRLC(r->pool, cfg->source, tile, cfg->suffix), code);
         return code;
     }
 
