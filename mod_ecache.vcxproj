@@ -158,6 +158,7 @@
     <Link>
       <AdditionalDependencies>libahtse.lib;libhttpd.lib;libapr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>\Apache24\lib</AdditionalLibraryDirectories>
+      <AdditionalOptions>/EXPORT:ecache_module,@1</AdditionalOptions>
     </Link>
     <PostBuildEvent>
       <Command>copy /y $(TargetPath) \Apache24\modules</Command>
