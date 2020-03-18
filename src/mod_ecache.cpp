@@ -13,6 +13,7 @@
 #include <receive_context.h>
 #include <http_log.h>
 #include <http_request.h>
+#include <apr_md5.h>
 
 using namespace std;
 
@@ -187,8 +188,8 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
 
     auto *cfg = get_conf<ecache_conf>(r, &ecache_module);
 
-    char *sETag = NULL;
     storage_manager tilebuf;
+    char ETag[APR_MD5_DIGESTSIZE]; // used as MD5 digest also
     tilebuf.size = cfg->raster.maxtilesize;
     tilebuf.buffer = static_cast<char *>(apr_palloc(r->pool, tilebuf.size));
     if (!tilebuf.buffer) {
@@ -199,12 +200,16 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
 
-    int code = get_remote_tile(r, cfg->source, tile, tilebuf, &sETag, cfg->suffix);
+    // Ignore the source ETag
+    int code = get_remote_tile(r, cfg->source, tile, tilebuf, NULL, cfg->suffix);
     if (APR_SUCCESS != code) {
         ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", 
             pMRLC(r->pool, cfg->source, tile, cfg->suffix), code);
         return code;
     }
+
+    if (tilebuf.size == 0)
+        return sendEmptyTile(r, cfg->raster.missing);
 
     // Got the tile, store it
     apr_file_t *pfh;
@@ -233,17 +238,19 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
         apr_file_write(pfh, &tinfo.offset, &size);
         apr_file_unlock(pfh);
         apr_file_close(pfh);
-        // idx_offset has the local tile offset to compute the ETag
-        // Use the same formula as the main handler
 
-        sETag = reinterpret_cast<char *>(apr_palloc(r->pool, 16));
-        // Very poor etag
-        tobase32(cfg->raster.seed ^ ((tinfo.size < 1) ^ (idx_offset << 7)), sETag);
+        // Use MD5, we can store the etag in the same place
+        apr_md5(reinterpret_cast<unsigned char *>(ETag), 
+            tilebuf.buffer, tilebuf.size);
+        apr_uint64_t val;
+        memcpy(&val, ETag, sizeof(val));
+        tobase32(cfg->raster.seed ^ val, ETag);
     }
     
     // The tile data is still int the buffer
-    // Don't check the ETag since it was just computed
-    apr_table_set(r->headers_out, "ETag", sETag);
+    apr_table_set(r->headers_out, "ETag", ETag);
+    if (etagMatches(r, ETag))
+        return HTTP_NOT_MODIFIED;
     return sendImage(r, tilebuf);
 }
 
@@ -329,12 +336,15 @@ static int handler(request_rec *r) {
         apr_psprintf(pool, "Tile too large, %s", r->uri));
 
     char ETag[16];
-    // Very poor etag
-    tobase32(raster.seed ^ ((tinfo.size < 1) ^ (tinfo.offset << 7)), ETag);
-    if (etagMatches(r, ETag)) {
-        apr_table_set(r->headers_out, "ETag", ETag);
-        return HTTP_NOT_MODIFIED;
+    if (!cfg->source) {
+        // Very poor etag, but doesn't read the cache
+        tobase32(raster.seed ^ ((tinfo.size < 1) ^ (tinfo.offset << 7)), ETag);
+        if (etagMatches(r, ETag)) {
+            apr_table_set(r->headers_out, "ETag", ETag);
+            return HTTP_NOT_MODIFIED;
+        }
     }
+
 
     // Read the data and send it
     sm.size = static_cast<int>(tinfo.size);
@@ -344,6 +354,19 @@ static int handler(request_rec *r) {
     SERR_IF(!sm.buffer, "Allocation error");
     SERR_IF(sm.size != bundle_pread(r, sm, tinfo.offset, bundlename), 
         apr_psprintf(pool, "Data read error from %s", bundlename));
+
+    if (cfg->source) { // Compute etag using MD5, check the conditional request
+        unsigned char digest[APR_MD5_DIGESTSIZE];
+        apr_md5(digest, sm.buffer, sm.size);
+        apr_uint64_t val;
+        memcpy(&val, digest, sizeof(val));
+        val ^= raster.seed; // Alter the md5 digest with the seed
+        tobase32(raster.seed ^ val, ETag);
+        if (etagMatches(r, ETag)) {
+            apr_table_set(r->headers_out, "ETag", ETag);
+            return HTTP_NOT_MODIFIED;
+        }
+    }
 
     // Got the data, send it
     apr_table_set(r->headers_out, "ETag", ETag);
