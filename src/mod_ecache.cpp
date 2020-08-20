@@ -204,7 +204,7 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     int code = get_remote_tile(r, cfg->source, tile, tilebuf, NULL, cfg->suffix);
     if (APR_SUCCESS != code) {
         ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", 
-            pMRLC(r->pool, cfg->source, tile, cfg->suffix), code);
+            pMLRC(r->pool, cfg->source, tile, cfg->suffix), code);
         return code;
     }
 
