@@ -52,10 +52,6 @@ static void *create_dir_config(apr_pool_t *p, char *dummy) {
     return c;
 }
 
-static const char *set_regexp(cmd_parms *cmd, ecache_conf *c, const char *pattern) {
-    return add_regexp_to_array(cmd->pool, &c->arr_rxp, pattern);
-}
-
 static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) {
     const char *err_message, *line;
     apr_table_t *kvp = readAHTSEConfig(cmd->temp_pool, fname, &err_message);
@@ -380,7 +376,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec cmds[] = {
     AP_INIT_TAKE1(
         "ECache_RegExp",
-        (cmd_func)set_regexp,
+        (cmd_func) set_regexp<ecache_conf>,
         0, // self pass arg, added to the config address
         ACCESS_CONF,
         "The request pattern the URI has to match"
