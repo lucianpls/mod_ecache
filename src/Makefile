@@ -15,11 +15,11 @@ TARGET = .libs/$(MODULE).so
 # Can't use apxs to build c++ modules
 # The options used here might depend on how apache was built
 $(TARGET)       :       $(FILES)
-	$(LIBTOOL) --silent --mode=compile g++ -prefer-pic -O2 -Wall $(DEFINES) $(INCLUDES) -pthread -c -o $(MODULE).lo $(C_SRC) && touch $(MODULE).slo
+	$(LIBTOOL) --silent --mode=compile g++ -prefer-pic -O2 -Wall $(DEFINES) $(EXTRA_INCLUDES) -pthread -c -o $(MODULE).lo $(C_SRC) && touch $(MODULE).slo
 	$(LIBTOOL) --silent --mode=link g++ -o $(MODULE).la -rpath $(DEST) -module -avoid-version $(MODULE).lo
 
 install : $(TARGET)
-	$(SUDO) cp $(TARGET) $(DEST)
+	$(SUDO) $(CP) $(TARGET) $(DEST)
 
 clean   :
-	rm -rf .libs *.{o,lo,slo,la}
+	$(RM) -rf .libs *.{o,lo,slo,la}

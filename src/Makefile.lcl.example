@@ -1,0 +1,8 @@
+APXS = apxs
+includedir = $(shell $(APXS) -q includedir 2>/dev/null)
+EXTRA_INCLUDES = $(shell $(APXS) -q EXTRA_INCLUDES 2>/dev/null)
+LIBTOOL = $(shell $(APXS) -q LIBTOOL 2>/dev/null)
+
+# SUDO = sudo
+CP = cp
+DEST = /etc/httpd/modules
