@@ -9,14 +9,15 @@ DEFINES = -DLINUX -D_REENTRANT -D_GNU_SOURCE $(DEBUG)
 # INCLUDES, the gcc include commands for httpd, apr headers
 # LIBTOOL, DEBUG ...
 
-include Makefile.lcl
+MAKEOPT ?= Makefile.lcl
+include $(MAKEOPT)
 TARGET = .libs/$(MODULE).so
 
 # Can't use apxs to build c++ modules
 # The options used here might depend on how apache was built
 $(TARGET)       :       $(FILES)
 	$(LIBTOOL) --silent --mode=compile g++ -prefer-pic -O2 -Wall $(DEFINES) $(EXTRA_INCLUDES) -pthread -c -o $(MODULE).lo $(C_SRC) && touch $(MODULE).slo
-	$(LIBTOOL) --silent --mode=link g++ -o $(MODULE).la -rpath $(DEST) -module -avoid-version $(MODULE).lo
+	$(LIBTOOL) --silent --mode=link g++ -o $(MODULE).la -rpath $(LIBEXECDIR) -module -avoid-version $(MODULE).lo
 
 install : $(TARGET)
 	$(SUDO) $(CP) $(TARGET) $(DEST)

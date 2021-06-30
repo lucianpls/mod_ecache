@@ -10,6 +10,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Support", "Support", "{05F7
 		.gitignore = .gitignore
 		LICENSE = LICENSE
 		src\Makefile = src\Makefile
+		src\Makefile.lcl.example = src\Makefile.lcl.example
 		README.md = README.md
 	EndProjectSection
 EndProject
