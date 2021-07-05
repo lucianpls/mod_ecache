@@ -144,7 +144,7 @@ static size_t bundle_pread(request_rec *r, storage_manager &mgr,
         return file_pread(r, name, offset, mgr, cfg->source == nullptr);
     // remote
     const char *err_msg = nullptr;
-    int received = range_read(r, name + 2, offset, mgr, cfg->retries, &err_msg);
+    size_t received = range_read(r, name + 2, offset, mgr, cfg->retries, &err_msg);
     if (received != mgr.size && *err_msg)
         ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "%s", err_msg);
     return received;
@@ -298,7 +298,7 @@ static int handler(request_rec *r) {
 
     // The raster.skip doesn't affect the folder name
     const char *bundlename = apr_psprintf(pool, 
-        "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, blev - raster.skip, brow, bcol);
+        "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, static_cast<int>(blev - raster.skip), brow, bcol);
 
     range_t tinfo = { 0, 0 };
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
