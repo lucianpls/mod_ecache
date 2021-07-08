@@ -18,6 +18,7 @@
 using namespace std;
 
 NS_AHTSE_USE
+NS_ICD_USE
 
 extern module AP_MODULE_DECLARE_DATA ecache_module;
 
@@ -95,7 +96,7 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
     return HTTP_INTERNAL_SERVER_ERROR; \
 }
 
-static int file_pread(request_rec *r, const char *fname, apr_off_t offset, 
+static size_t file_pread(request_rec *r, const char *fname, apr_off_t offset, 
     storage_manager &dst, bool locking = false)
 {
     apr_file_t *pfh;
@@ -134,7 +135,7 @@ static int file_pread(request_rec *r, const char *fname, apr_off_t offset,
 }
 
 // Read tile from bundle, either local or remote
-static int bundle_pread(request_rec *r, storage_manager &mgr,
+static size_t bundle_pread(request_rec *r, storage_manager &mgr,
     apr_off_t offset, const char *name, const char *token = "BUNDLE")
 {
     auto  cfg = get_conf<ecache_conf>(r, &ecache_module);
@@ -143,7 +144,7 @@ static int bundle_pread(request_rec *r, storage_manager &mgr,
         return file_pread(r, name, offset, mgr, cfg->source == nullptr);
     // remote
     const char *err_msg = nullptr;
-    int received = range_read(r, name + 2, offset, mgr, cfg->retries, &err_msg);
+    size_t received = range_read(r, name + 2, offset, mgr, cfg->retries, &err_msg);
     if (received != mgr.size && *err_msg)
         ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "%s", err_msg);
     return received;
@@ -278,7 +279,7 @@ static int handler(request_rec *r) {
 
     // Our request
     apr_pool_t *pool = r->pool;
-    sz tile;
+    sz5 tile;
     REQ_ERR_IF(APR_SUCCESS != getMLRC(r, tile));
     REQ_ERR_IF(tile.z); // Until M Dimension
     const TiledRaster &raster = cfg->raster;
@@ -297,7 +298,7 @@ static int handler(request_rec *r) {
 
     // The raster.skip doesn't affect the folder name
     const char *bundlename = apr_psprintf(pool, 
-        "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, blev - raster.skip, brow, bcol);
+        "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, static_cast<int>(blev - raster.skip), brow, bcol);
 
     range_t tinfo = { 0, 0 };
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
