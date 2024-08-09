@@ -63,8 +63,14 @@ static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) 
     err_message = configRaster(cmd->pool, kvp, c->raster);
     if (err_message)
         return err_message;
-    if (c->raster.size.z != 1)
-        return "Extra dimension not supported";
+    if (c->raster.size.z != 1) {
+        // If we have a third dimension, we need a specific selector
+        line = apr_table_get(kvp, "Select");
+        if (!line)
+            return "Selector directive missing";
+        // Store it in raster.z, overriding the size
+        c->raster.size.z = atoi(line);
+    }
 
     line = apr_table_get(kvp, "DataPath");
     if (!line)
@@ -196,6 +202,9 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
 
     // Undo the level adjustment, so the remote gets the right tile
     tile.l -= cfg->raster.skip;
+    // Use the selector if set
+    if (cfg->raster.size.z)
+        tile.z = cfg->raster.size.z;
 
     // Ignore the source ETag
     int code = get_remote_tile(r, cfg->source, tile, tilebuf, NULL, cfg->suffix);

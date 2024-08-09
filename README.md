@@ -36,4 +36,10 @@ The convention is that level 0 has only 1 tile. This is used to block requests f
 
 * *MaxTileSize* N  
 
-The maximum tile size for this cache, used to size the receive buffer when requesting tiles from the source. It defaults to 4MB, it can be set between 128K and 512MB.  Too large of a value will lead to memory overflow.  Too small of a value may truncate cached tiles
+The maximum tile size for this cache, used to size the receive buffer when requesting tiles from the source.
+It defaults to 4MB, it can be set between 128K and 512MB.  Too large of a value may lead to memory overflow.  Too small of a value may truncate cached tiles.
+
+* *Select* N
+
+Required if the raster size has a 3rd dimension. 
+This value will be used to select the specific slice, it has to be between 0 and 3rd dimension size
