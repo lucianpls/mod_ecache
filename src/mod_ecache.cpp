@@ -208,8 +208,30 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     // Use the selector
     tile.z = cfg->raster.size.z;
 
-    // Ignore the source ETag
-    int code = get_remote_tile(r, cfg->source, tile, tilebuf, NULL, cfg->suffix);
+    char* ETags = nullptr;
+    int code = get_remote_tile(r, cfg->source, tile, tilebuf, &ETags, cfg->suffix);
+    // Try to follow a redirect once, if we got one
+    if (code == HTTP_MOVED_PERMANENTLY || code == HTTP_MOVED_TEMPORARILY) {
+        // ETags should start with "http://localhost:port/"
+        if (ETags && *ETags) {
+            // Otherwise, it is a full URL, find the third slash, the local path of the redirect
+			auto* slash = strchr(ETags, '/');
+            if (slash) {
+                slash = strchr(slash + 1, '/'); // second slash
+                if (slash) {
+                    slash = strchr(slash + 1, '/'); // third slash
+                }
+			}
+            // Reset the tile buffer size
+			tilebuf.size = cfg->raster.maxtilesize;
+            // Retry the request
+            code = get_response(r, slash, tilebuf, &ETags);
+        }
+        else {
+            // No location, no tile
+            return HTTP_NOT_FOUND;
+		}
+    }
     if (APR_SUCCESS != code) {
         ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", 
             pMLRC(r->pool, cfg->source, tile, cfg->suffix), code);
