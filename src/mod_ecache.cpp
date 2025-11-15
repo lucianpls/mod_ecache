@@ -30,7 +30,7 @@ static const int BSZ = 128;
 static const int TMASK = BSZ - 1;
 static const int OBITS = 40;
 
-struct ecache_conf {
+struct conf_t {
     apr_array_header_t *arr_rxp;
     // Raster configuration
     TiledRaster raster;
@@ -46,14 +46,14 @@ struct ecache_conf {
 };
 
 static void *create_dir_config(apr_pool_t *p, char *dummy) {
-    auto *c = reinterpret_cast<ecache_conf *>(
-        apr_pcalloc(p, sizeof(ecache_conf)));
+    auto c = reinterpret_cast<conf_t *>(apr_pcalloc(p, sizeof(conf_t)));
     c->retries = 4;
-    c->unauth_code = HTTP_NOT_FOUND; // Default action on password missmatch is decline
+    // Default action on password missmatch is to decline
+    c->unauth_code = HTTP_NOT_FOUND;
     return c;
 }
 
-static const char *configure(cmd_parms *cmd, ecache_conf *c, const char *fname) {
+static const char *configure(cmd_parms *cmd, conf_t *c, const char *fname) {
     const char *err_message, *line;
     apr_table_t *kvp = readAHTSEConfig(cmd->temp_pool, fname, &err_message);
     if (NULL == kvp)
@@ -147,7 +147,7 @@ static size_t file_pread(request_rec *r, const char *fname, apr_off_t offset,
 static size_t bundle_pread(request_rec *r, storage_manager &mgr,
     apr_off_t offset, const char *name, const char *token = "BUNDLE")
 {
-    auto  cfg = get_conf<ecache_conf>(r, &ecache_module);
+    auto cfg = get_conf<conf_t>(r, &ecache_module);
     bool redirect = (strlen(name) > 3 && name[0] == ':' && name[1] == '/');
     if (!redirect)
         return file_pread(r, name, offset, mgr, cfg->source == nullptr);
@@ -192,7 +192,7 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
     const int flags = APR_FOPEN_WRITE | APR_FOPEN_BINARY | APR_FOPEN_XTHREAD
         | APR_FOPEN_SHARELOCK | APR_FOPEN_LARGEFILE | APR_FOPEN_NOCLEANUP;
 
-    auto *cfg = get_conf<ecache_conf>(r, &ecache_module);
+    auto cfg = get_conf<conf_t>(r, &ecache_module);
 
     storage_manager tilebuf;
     char ETag[APR_MD5_DIGESTSIZE]; // used as MD5 digest also
@@ -215,22 +215,22 @@ static int dynacache(request_rec *r, sloc_t tile, const char *bundlename)
         // ETags should start with "http://localhost:port/"
         if (ETags && *ETags) {
             // Otherwise, it is a full URL, find the third slash, the local path of the redirect
-			auto* slash = strchr(ETags, '/');
+            auto slash = strchr(ETags, '/');
             if (slash) {
                 slash = strchr(slash + 1, '/'); // second slash
                 if (slash) {
                     slash = strchr(slash + 1, '/'); // third slash
                 }
-			}
+            }
             // Reset the tile buffer size
-			tilebuf.size = cfg->raster.maxtilesize;
+            tilebuf.size = cfg->raster.maxtilesize;
             // Retry the request
             code = get_response(r, slash, tilebuf, &ETags);
         }
         else {
             // No location, no tile
             return HTTP_NOT_FOUND;
-		}
+        }
     }
     if (APR_SUCCESS != code) {
         ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r, "%s failed, %d", 
@@ -288,7 +288,7 @@ static int handler(request_rec *r) {
     if (r->method_number != M_GET)
         return DECLINED;
 
-    auto *cfg = get_conf<ecache_conf>(r, &ecache_module);
+    auto cfg = get_conf<conf_t>(r, &ecache_module);
     if ((cfg->indirect && !r->main)
         || (cfg->password && !r->args) // Password has to be a parameter
         || !requestMatches(r, cfg->arr_rxp))
@@ -300,7 +300,7 @@ static int handler(request_rec *r) {
 
     // Password checking should be a libahtse function
     if (cfg->password) {
-        auto *pass = reinterpret_cast<const char *>(
+        auto pass = reinterpret_cast<const char *>(
             apr_hash_get(params, "password", APR_HASH_KEY_STRING));
         // No tolerance, has to have the right password
         if (!pass || strcmp(pass, cfg->password)) {
@@ -330,8 +330,8 @@ static int handler(request_rec *r) {
     apr_uint32_t brow = static_cast<apr_uint32_t>((tile.y / BSZ) * BSZ);
 
     // The raster.skip doesn't affect the folder name
-    const char *bundlename = apr_psprintf(pool, 
-        "%s/L%02d/R%04xC%04x.bundle", cfg->dpath, static_cast<int>(blev - raster.skip), brow, bcol);
+    const char *bundlename = apr_psprintf(pool, "%s/L%02d/R%04xC%04x.bundle", 
+        cfg->dpath, static_cast<int>(blev - raster.skip), brow, bcol);
 
     range_t tinfo = { 0, 0 };
     apr_off_t idx_offset = 64 + 8 * ((tile.y & TMASK) * BSZ + (tile.x & TMASK));
@@ -410,7 +410,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec cmds[] = {
     AP_INIT_TAKE1(
         "ECache_RegExp",
-        (cmd_func) set_regexp<ecache_conf>,
+        (cmd_func) set_regexp<conf_t>,
         0, // self pass arg, added to the config address
         ACCESS_CONF,
         "The request pattern the URI has to match"
@@ -427,7 +427,7 @@ static const command_rec cmds[] = {
     ,AP_INIT_FLAG(
         "ECache_Indirect",
         (cmd_func) ap_set_flag_slot,
-        (void *)APR_OFFSETOF(ecache_conf, indirect),
+        (void *)APR_OFFSETOF(conf_t, indirect),
         ACCESS_CONF, // availability
         "If set, module activates only on subrequests"
     )
@@ -435,7 +435,7 @@ static const command_rec cmds[] = {
     ,AP_INIT_TAKE1(
         "ECache_Password",
         (cmd_func) ap_set_string_slot,
-        (void *)APR_OFFSETOF(ecache_conf, password),
+        (void *)APR_OFFSETOF(conf_t, password),
         ACCESS_CONF,
         "If set, the request password paramter value has to match"
     )
@@ -443,15 +443,15 @@ static const command_rec cmds[] = {
     ,AP_INIT_TAKE1(
         "ECache_UnauthorizedCode",
         (cmd_func)ap_set_int_slot,
-        (void *)APR_OFFSETOF(ecache_conf, unauth_code),
+        (void *)APR_OFFSETOF(conf_t, unauth_code),
         ACCESS_CONF,
         "HTTP error code to return when the password is set but the request doesn't "
         "match it. It defaults to 404 (not found), which is the safest choice"
     )
 
-    ,AP_INIT_TAKE1(
+    ,AP_INIT_TAKE12(
         "ECache_Source",
-        (cmd_func) set_source<ecache_conf>,
+        (cmd_func) set_source<conf_t>,
         0,
         ACCESS_CONF,
         "Set to a redirect path containing the AHTSE service which will be cached in this ecache"
