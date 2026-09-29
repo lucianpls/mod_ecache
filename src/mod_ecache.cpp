@@ -5,7 +5,7 @@
  * It can cache a source service in bundles
  *
  * Lucian Plesea
- * (C) 2019
+ * (C) 2019 - 2026
  * 
  */
 
@@ -153,14 +153,17 @@ static size_t bundle_pread(request_rec *r, storage_manager &mgr,
         return file_pread(r, name, offset, mgr, cfg->source == nullptr);
     // remote
     const char *err_msg = nullptr;
-    size_t received = range_read(r, name + 2, offset, mgr, cfg->retries, &err_msg);
-    if (received != mgr.size && *err_msg)
+    // range_read returns the full size of the file, not the read size
+    // If it returns 0, the read failed
+    size_t fullsize = range_read(r, name + 2, offset, mgr, cfg->retries, &err_msg);
+    // if the read failed and we have an error message, log it
+    if (!fullsize && *err_msg)
         ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "%s", err_msg);
-    return received;
+    return mgr.size; // 
 }
 
 // Called when caching and reading from the bundlename failed
-// Try to create a bundle file, retun success if it worked
+// Try to create a bundle file, return success if it worked
 static int binit(request_rec *r, const char *bundlename)
 {
     const int flags = APR_FOPEN_WRITE | APR_FOPEN_CREATE
